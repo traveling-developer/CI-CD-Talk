@@ -1,0 +1,157 @@
+variables:
+   FLUTTER_PACKAGES_FOLDER: flutter_packages
+   FLUTTER_VERSION: 3.0.4
+   PUB_CACHE: $CI_PROJECT_DIR/$FLUTTER_PACKAGES_FOLDER
+
+default:
+    image: $CI_REGISTRY_IMAGE:$FLUTTER_VERSION
+
+cache:
+  key: ${CI_COMMIT_REF_SLUG}
+  paths:
+    - flutter_packages/
+
+stages:
+    - analyze
+    - test
+    - build
+    - deploy
+    - release
+
+docker build:
+    stage: .pre
+    image: docker:stable
+    services:
+        - docker:dind
+    when: manual
+    script:
+        - cd docker
+        - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+        - docker build -f Dockerfile -t $CI_REGISTRY_IMAGE:$FLUTTER_VERSION .
+        - docker push $CI_REGISTRY_IMAGE:$FLUTTER_VERSION
+
+check dart format:
+    stage: analyze
+    script:
+        - ./resources/check-dart-fmt.sh
+
+analyze:
+    stage: analyze
+    script:
+        - cd src && flutter analyze && cd ..
+
+check-images:
+    stage: analyze
+    script:
+        - echo "check images to contain resolutions (1.5x 2.0x 3.0x 4.0x 5.0x)"
+
+unit test:
+     stage: test
+     script:
+        - cd src
+        - flutter test --machine --coverage test/unit/* > unit_test_report.json || exit_code_on_fail=$?
+        - cat unit_test_report.json | tojunit --output unit_test_report.xml
+        - dart_dot_reporter unit_test_report.json --show-success --show-message
+        - genhtml -o coverage-report coverage/lcov.info
+        # starting with gitLab 14.10 it is possible to upload cobertura coverage files directly to gitLab
+        - exit $exit_code_on_fail
+     artifacts:
+        paths:
+          - src/unit_test_report.xml
+          - src/coverage-report/*
+          - src/coverage-report/**/*
+        reports:
+          junit: src/unit_test_report.xml
+
+widget test:
+    stage: test
+    script:
+        - cd src
+        - flutter test --machine test/widget/ > widget_test_report.json || exit_code_on_fail=$?
+        - cat widget_test_report.json | tojunit --output widget_test_report.xml
+        - dart_dot_reporter widget_test_report.json --show-success --show-message
+        - exit $exit_code_on_fail
+    artifacts:
+        paths:
+          - src/widget_test_report.xml
+        reports:
+          junit: src/widget_test_report.xml
+
+documentation build:
+    stage: build
+    script:
+        - echo "build your documentation e.g. with markdown or sphinx"
+
+android build:
+    stage: build
+    script:
+        - cd src
+        - flutter clean
+        - flutter build apk --build-number $CI_PIPELINE_ID
+    artifacts:
+        paths:
+            - src/build/app/outputs/apk/release/app-release.apk
+        expire_in: 1 week
+
+ios build:
+    stage: build
+    tags:
+        - xcode
+    dependencies: []
+    script:
+        - cd src
+        - fvm spawn $FLUTTER_VERSION clean
+        - fvm spawn $FLUTTER_VERSION build ipa --build-number $CI_PIPELINE_ID --export-method app-store
+    artifacts:
+        paths:
+            - src/build/ios/ipa/sample.ipa
+        expire_in: 1 week
+
+env:development build & deploy:
+    stage: deploy
+    variables:
+        APP_SUFFIX: '.development'
+    trigger:
+        include: ci/environments.gitlab-ci.yml
+        strategy: depend
+    only:
+        - master
+
+env:staging build & deploy:
+    stage: deploy
+    variables:
+        APP_SUFFIX: '.staging'
+    trigger:
+        include: ci/environments.gitlab-ci.yml
+        strategy: depend
+    only:
+        - master
+
+integration test:
+    stage: deploy
+    tags:
+        - team-mobile
+    script:
+        - adb start-server
+        - emu=$(emulator -list-avds)
+        - emulator -avd $emu -no-audio -no-window -no-snapshot -no-boot-anim &
+        - timeout 90 adb wait-for-device
+        - cd src
+        - flutter test integration_test --machine > integration_test_report.json || exit_code_on_fail=$?
+        - cat integration_test_report.json | tojunit --output integration_test_report.xml
+        - dart_dot_reporter integration_test_report.json --show-success --show-message
+        - exit $exit_code_on_fail
+    artifacts:
+        paths:
+          - src/integration_test_report.xml
+        reports:
+          junit: src/integration_test_report.xml
+
+env:production build & deploy & release:
+    stage: release
+    when: manual
+    trigger:
+        include: ci/production.gitlab-ci.yml
+        strategy: depend
+    only:
+        - master

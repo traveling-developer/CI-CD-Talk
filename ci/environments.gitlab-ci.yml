@@ -1,0 +1,57 @@
+default:
+    image: $CI_REGISTRY_IMAGE:$FLUTTER_VERSION
+
+before_script:
+    - export PUB_CACHE=$CI_PROJECT_DIR/$FLUTTER_PACKAGES_FOLDER
+
+stages:
+    - build
+    - deploy
+
+android build:
+    stage: build
+    script:
+        - cd src
+        - flutter clean
+        - flutter build appbundle --build-number $CI_PIPELINE_ID --release --obfuscate --split-debug-info=android-debug-info
+         --dart-define=CICD_APP_SUFFIX=$APP_SUFFIX
+    artifacts:
+        paths:
+            - src/build/app/outputs/bundle/release/app-release.aab
+            - src/android-debug-info/*
+
+ios build:
+    stage: build
+    tags:
+        - xcode
+    dependencies: []
+    script:
+        - cd src
+        - fvm spawn $FLUTTER_VERSION clean
+        - fvm spawn $FLUTTER_VERSION build ipa --build-number $CI_PIPELINE_ID --release --obfuscate --split-debug-info=ios-debug-info --export-method=app-store
+         --dart-define=CICD_APP_SUFFIX=$APP_SUFFIX
+    artifacts:
+        paths:
+            - src/build/ios/ipa/sample.ipa
+            - src/ios-debug-info/*
+
+android deploy:
+    stage: deploy
+    when: manual
+    dependencies:
+        - android build
+    script:
+        - base64 -d $ANDROID_SERVICE_ACCOUNT_CREDENTIALS > ${CI_PROJECT_DIR}/serviceAccountCredentials.json
+        - export GOOGLE_APPLICATION_CREDENTIALS=${CI_PROJECT_DIR}/serviceAccountCredentials.json
+        - publisher googleplay uploadBundle -p src/build/app/outputs/bundle/release/app-release.aab -n "com.methodpark.example$APP_SUFFIX"
+        - publisher googleplay release -n "com.com.methodpark.example$APP_SUFFIX" -t internal -v $CI_PIPELINE_ID -s completed --releaseName $CI_PIPELINE_ID
+
+ios deploy:
+    stage: deploy
+    when: manual
+    tags:
+        - xcode
+    dependencies:
+        - ios build
+    script:
+        - xcrun altool --upload-app --type ios --file src/build/ios/ipa/sample.ipa --username $APPLE_USER --password $APPLE_PASSWORD
